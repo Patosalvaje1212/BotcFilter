@@ -145,7 +145,7 @@ class ImageFilterProgram
         stopwatch.Stop();
 
         Console.ForegroundColor = ConsoleColor.DarkYellow;
-        Console.Write($"{toProcess + 1} images rendered in {stopwatch.Elapsed.Minutes}:{stopwatch.Elapsed.Seconds}:{stopwatch.Elapsed.Milliseconds} elapsed");
+        Console.Write($"{i} images rendered in {stopwatch.Elapsed.Minutes}:{stopwatch.Elapsed.Seconds}:{stopwatch.Elapsed.Milliseconds} elapsed");
     }
 
     private static void ProcessFile(object? obj)
@@ -156,6 +156,42 @@ class ImageFilterProgram
         Image<Rgba32> filter = (Image<Rgba32>)args[1];
 
         using Image<Rgba32> sourceImage = Image.Load<Rgba32>(path);
+
+        double aspect = sourceImage.Height / sourceImage.Width;
+
+        if( sourceImage.Height > filter.Height )
+        {
+            sourceImage.Mutate(x => {
+                
+                x.Resize(new ResizeOptions()
+                {
+                    Mode = ResizeMode.Max,
+                    Size = new Size(filter.Width, filter.Height),
+                    Position = AnchorPositionMode.Center,
+                    Sampler = KnownResamplers.RobidouxSharp,
+                    //TargetRectangle = new Rectangle(new Point(filter.Width / 2, filter.Height / 2), new Size(filter.Width, filter.Height)),
+                    CenterCoordinates = new PointF(0.5f, 0.5f)
+
+                } );
+                x.Pad(filter.Width, filter.Height, Color.Transparent);
+            });
+        }
+        else
+        if( sourceImage.Width > filter.Width )
+        {
+            sourceImage.Mutate(x => {
+
+                x.Resize(new ResizeOptions()
+                {
+                    Size = new Size(filter.Width, filter.Height),
+                    Mode = ResizeMode.Max,
+                    Position = AnchorPositionMode.Center,
+                    Sampler = KnownResamplers.Lanczos3
+                } );
+                x.Pad(filter.Width, filter.Height, Color.Transparent);
+            });
+
+        }
 
         using Image<Rgba32> destG = new Image<Rgba32>(Configuration.Default, sourceImage.Width, sourceImage.Height);
         using Image<Rgba32> destB = new Image<Rgba32>(Configuration.Default, sourceImage.Width, sourceImage.Height);
@@ -172,6 +208,7 @@ class ImageFilterProgram
         {
             for (int i = 0; i < height; i++)
             {
+
                 Span<Rgba32> sourceRow = sourceAccessor.GetRowSpan(i);
                 Span<Rgba32> targetGoodRow = targetGoodAccessor.GetRowSpan(i);
                 Span<Rgba32> targetBadRow = targetBadAccessor.GetRowSpan(i);
@@ -183,7 +220,6 @@ class ImageFilterProgram
                     Hsv goodColor = ColorSpaceConverter.ToHsv(Color.Transparent.ToPixel<Rgba32>());
                     Hsv badColor = ColorSpaceConverter.ToHsv(Color.Transparent.ToPixel<Rgba32>());
 
-                    // Get a reference to the pixel at position x
                     Rgba32 pixel = sourceRow[x];
 
                     float alpha = pixel.A / 255f;
@@ -192,22 +228,23 @@ class ImageFilterProgram
                     {
                         Hsv hsvPixel = ColorSpaceConverter.ToHsv(pixel);
 
-                        if (hsvPixel.V < 0.9)
+                        if (hsvPixel.V < 0.85)
                         {
                             var pow = MathF.Pow(hsvFilter.V, 1.75f);
                             var pow2 = MathF.Pow(hsvFilter.V, 1.25f);
 
+                            var invPow = MathF.Pow(1 - hsvFilter.V, 1.25f);
 
                             goodColor = new Hsv(
-                                Mix(outColorGoodHSL.H, outColorWhiteHSL.H, hsvPixel.V) * 0.2f + outColorGoodHSL.H * 0.8f,
-                                Mix(outColorGoodHSL.S, outColorWhiteHSL.S, hsvPixel.V) * 0.80f + pow * 0.2f,
-                                Mix(outColorGoodHSL.V, outColorWhiteHSL.V, hsvPixel.V) * hsvFilter.V
+                                Mix(outColorGoodHSL.H, outColorWhiteHSL.H, invPow) * 0.2f + outColorGoodHSL.H * 0.8f,
+                                Mix(outColorGoodHSL.S, outColorWhiteHSL.S, invPow) * 0.80f + pow * 0.2f,
+                                Mix(outColorGoodHSL.V, outColorWhiteHSL.V, invPow) * hsvFilter.V
                             );
 
                             badColor = new Hsv(
-                                Mix(outColorBadHSL.H, outColorWhiteHSL.H, hsvPixel.V) * 0.2f + outColorBadHSL.H * 0.8f,
-                                Mix(outColorBadHSL.S, outColorWhiteHSL.S, hsvPixel.V) * 0.85f + pow * 0.2f,
-                                Mix(outColorBadHSL.V, outColorWhiteHSL.V, hsvPixel.V) * pow2 * 0.85f
+                                Mix(outColorBadHSL.H, outColorWhiteHSL.H, invPow) * 0.2f + outColorBadHSL.H * 0.8f,
+                                Mix(outColorBadHSL.S, outColorWhiteHSL.S, invPow) * 0.85f + pow * 0.2f,
+                                Mix(outColorBadHSL.V, outColorWhiteHSL.V, invPow) * pow2 * 0.85f
                             );
 
                         }
@@ -375,7 +412,7 @@ class ImageFilterProgram
 
                 int val = k * k + j * j;
 
-                if (sourceAccessor.GetRowSpan(y)[x + 1].A < 40 || sourceAccessor.GetRowSpan(y)[x - 1].A < 40) val -= 2;
+               // if (sourceAccessor.GetRowSpan(y)[x + 1].A < 40 || sourceAccessor.GetRowSpan(y)[x - 1].A < 40) val -= 2;
 
                 if (val < b)
                 {
