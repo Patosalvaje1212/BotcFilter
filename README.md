@@ -8,7 +8,7 @@ For each processed file, two versions are generated: one marked **Good** (blue) 
 ## User Manual
 
 ### Terminal
-> Usage: <INPUT DIRECTORY> <OUTPUT DIRECTORY> [numberToProcess]
+> Usage: `<INPUT DIRECTORY> <OUTPUT DIRECTORY> [numberToProcess]`
 
 
 - `<INPUT DIRECTORY>` and `<OUTPUT DIRECTORY>` can be absolute or relative folder paths.
