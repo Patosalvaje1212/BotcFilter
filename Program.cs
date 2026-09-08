@@ -24,13 +24,13 @@ class ImageFilterProgram
 
         if (args.Length < 2)
         {
-            if(args.Length > 0)
+            if (args.Length > 0)
             {
                 Console.WriteLine();
                 Console.WriteLine("Usage: <INPUT DIRECTORY> <OUTPUT DIRECTORY> [numberToProcess(default=all)]");
-                
+
                 Console.ForegroundColor = ConsoleColor.Green;
-                
+
                 Console.WriteLine();
                 Console.WriteLine("     There must be a file called \"filter.png\" on the INPUT DIRECTORY for the filter to work.");
                 Console.WriteLine();
@@ -44,7 +44,7 @@ class ImageFilterProgram
 
                 Console.ReadLine();
                 return;
-            }    
+            }
             else
             {
                 Console.ForegroundColor = ConsoleColor.Blue;
@@ -52,7 +52,7 @@ class ImageFilterProgram
                 Console.ResetColor();
 
                 inputPath = Console.ReadLine()?.Trim() ?? throw new Exception("Wrong text input");
-                
+
                 Console.ForegroundColor = ConsoleColor.Blue;
                 Console.WriteLine("Output Folder: ");
                 Console.ResetColor();
@@ -64,34 +64,32 @@ class ImageFilterProgram
                 Console.ForegroundColor = ConsoleColor.Blue;
                 Console.WriteLine("Images to process (default = all): ");
                 Console.ResetColor();
-                
-                if(int.TryParse(Console.ReadLine()?.Trim(), out int res))
+
+                if (int.TryParse(Console.ReadLine()?.Trim(), out int res))
                 {
                     nToProcess = res - 1;
                 }
 
-                if(nToProcess >= 0)
+                if (nToProcess >= 0)
                     toProcess = nToProcess;
             }
-            
+
         }
         else
         {
             inputPath = args[0];
             outputPath = args[1];
-        
-        
+
+
             if (args.Length >= 3)
             {
                 string amountToProcess = args[2];
                 int nToProcess = int.Parse(amountToProcess) - 1;
 
-                if(nToProcess >= 0)
-                    toProcess = nToProcess; 
+                if (nToProcess >= 0)
+                    toProcess = nToProcess;
             }
         }
-        
-
 
 
         if (!Directory.Exists(inputPath))
@@ -125,18 +123,17 @@ class ImageFilterProgram
 
         foreach (var file in files.OrderByDescending(File.GetLastWriteTime))
         {
-            if(Path.GetFileNameWithoutExtension(file) == "filter")
+            if (Path.GetFileNameWithoutExtension(file) == "filter")
                 continue;
 
             Thread newThread = new Thread(ProcessFile);
-            newThread.Start(new object[] {file, filter});
+            newThread.Start(new object[] { file, filter });
 
             threads.Add(newThread);
-            //ProcessFile(file, filter);
 
-            i ++;
+            i++;
 
-            if(i > toProcess)
+            if (i > toProcess)
                 break;
         }
 
@@ -154,7 +151,7 @@ class ImageFilterProgram
     private static void ProcessFile(object? obj)
     {
         object[] args = (object[])obj;
-        
+
         string path = (string)args[0];
         Image<Rgba32> filter = (Image<Rgba32>)args[1];
 
@@ -170,7 +167,7 @@ class ImageFilterProgram
 
         Console.Out.WriteLine("Processing " + outputPath + originName + "...");
 
-        
+
         sourceImage.ProcessPixelRows(destG, destB, (sourceAccessor, targetGoodAccessor, targetBadAccessor) =>
         {
             for (int i = 0; i < height; i++)
@@ -195,12 +192,12 @@ class ImageFilterProgram
                     {
                         Hsv hsvPixel = ColorSpaceConverter.ToHsv(pixel);
 
-                        if(hsvPixel.V < 0.9)
+                        if (hsvPixel.V < 0.9)
                         {
                             var pow = MathF.Pow(hsvFilter.V, 1.75f);
                             var pow2 = MathF.Pow(hsvFilter.V, 1.25f);
-                            
-                            
+
+
                             goodColor = new Hsv(
                                 Mix(outColorGoodHSL.H, outColorWhiteHSL.H, hsvPixel.V) * 0.2f + outColorGoodHSL.H * 0.8f,
                                 Mix(outColorGoodHSL.S, outColorWhiteHSL.S, hsvPixel.V) * 0.80f + pow * 0.2f,
@@ -212,22 +209,19 @@ class ImageFilterProgram
                                 Mix(outColorBadHSL.S, outColorWhiteHSL.S, hsvPixel.V) * 0.85f + pow * 0.2f,
                                 Mix(outColorBadHSL.V, outColorWhiteHSL.V, hsvPixel.V) * pow2 * 0.85f
                             );
-                            
+
                         }
                         else
                         {
-                            
+
                             goodColor = GetWhiteColor(hsvFilter);
                             badColor = GetWhiteColor(hsvFilter);
                         }
-                        
 
-                        
                     }
                     else
                     {
-                        
-                        // search near
+
                         int amount = 20;
 
                         float oD = ApplyShadow(
@@ -240,110 +234,39 @@ class ImageFilterProgram
                             sourceWidth: sourceImage.Width
                         );
 
-                        if(oD > 0)
+                        if (oD > 0)
                         {
                             goodColor = ColorSpaceConverter.ToHsv(Color.Black.ToPixel<Rgba32>());
                             badColor = ColorSpaceConverter.ToHsv(Color.Black.ToPixel<Rgba32>());
                             alpha = MathF.Pow(oD, 1.25f) * 0.50f;
                         }
-                        
+
 
                         amount = 5;
-                        
+
                         float nD = ApplyOutline(sourceAccessor, i, x, amount, sourceImage.Height, sourceImage.Width, true);
-                    
-                        if(nD > 0)
+
+                        if (nD > 0)
                         {
-                            //Console.Out.WriteLine(alpha);
-
-                            // >  Shadow:
-                            //goodColor = ColorSpaceConverter.ToHsv(Color.Black.ToPixel<Rgba32>());
-                            //badColor = ColorSpaceConverter.ToHsv(Color.Black.ToPixel<Rgba32>());
-                            //alpha = MathF.Min(MathF.Pow(nD, 0.5f) + 0.25f, 1f) * 0.5f;
-                            
-
-                            
                             goodColor = GetWhiteColor(hsvFilter);
                             badColor = GetWhiteColor(hsvFilter);
-                            
+
                             alpha = MathF.Min(MathF.Pow(1 - nD, 0.2f) + 0.25f, 1f);
-                                
-                            //Console.Out.WriteLine(alpha)
                         }
                     }
-                    
-                    
+
+
                     Rgba32 gCol = new Rgba32(new Vector4(ColorSpaceConverter.ToRgb(goodColor).ToVector3(), alpha));
                     Rgba32 bCol = new Rgba32(new Vector4(ColorSpaceConverter.ToRgb(badColor).ToVector3(), alpha));
 
-                    
+
                     targetGoodRow[x] = gCol;
                     targetBadRow[x] = bCol;
-
-                    //if(alpha < 125 && alpha > 0) Console.Out.WriteLine(targetBadRow[x].A);
                 }
             }
         });
 
-
-        /* sourceImage.ProcessPixelRows(destG, destB, (sourceAccessor, targetGoodAccessor, targetBadAccessor) =>
-        {
-            for (int i = 0; i < height; i++)
-            {
-                Span<Rgba32> sourceRow = sourceAccessor.GetRowSpan(i);
-                Span<Rgba32> targetGoodRow = targetGoodAccessor.GetRowSpan(i);
-                Span<Rgba32> targetBadRow = targetBadAccessor.GetRowSpan(i);
-
-                for (int x = 0; x < sourceRow.Length; x++)
-                {
-                    Hsv hsvFilter = ColorSpaceConverter.ToHsv(filter[i, x]);
-
-                    Hsv goodColor = ColorSpaceConverter.ToHsv(targetGoodRow[x]);
-                    Hsv badColor = ColorSpaceConverter.ToHsv(targetBadRow[x]);
-
-                    // Get a reference to the pixel at position x
-                    Rgba32 pixel = targetBadRow[x];
-
-                    float alpha = pixel.A / 255f;
-
-                    if (alpha < 0.4)
-                    {
-                        
-                        // search near
-                        int amount = 8;
-
-                        float nD = ApplyOutline(targetBadAccessor, i, x, amount, sourceImage.Height, sourceImage.Width);
-                        
-                        if(nD > 0)
-                        {
-                            //Console.Out.WriteLine(alpha);
-
-                            goodColor = GetWhiteColor(hsvFilter);
-                            badColor = GetWhiteColor(hsvFilter);
-                            
-                            alpha = MathF.Min(MathF.Pow(1 - nD, 0.5f) + 0.25f, 1f);
-                                
-
-                            //Console.Out.WriteLine(alpha)
-                   
-                        }
-
-                    }
-                    
-                    
-                    Rgba32 gCol = new Rgba32(new Vector4(ColorSpaceConverter.ToRgb(goodColor).ToVector3(), alpha));
-                    Rgba32 bCol = new Rgba32(new Vector4(ColorSpaceConverter.ToRgb(badColor).ToVector3(), alpha));
-
-                    
-                    targetGoodRow[x] = gCol;
-                    targetBadRow[x] = bCol;
-
-                    //if(alpha < 125 && alpha > 0) Console.Out.WriteLine(targetBadRow[x].A);
-                }
-            }
-        }); */
-
-        var pngEncoder  = new PngEncoder()
+        var pngEncoder = new PngEncoder()
         {
             TransparentColorMode = PngTransparentColorMode.Clear,
             Threshold = 150,
@@ -353,24 +276,24 @@ class ImageFilterProgram
             PixelSamplingStrategy = new ExtensivePixelSamplingStrategy(),
             BitDepth = PngBitDepth.Bit4,
             SkipMetadata = true,
-            
+
         };
 
         destB.Mutate(res => res.Resize(sourceImage.Width / 2, sourceImage.Height / 2));
         destG.Mutate(res => res.Resize(sourceImage.Width / 2, sourceImage.Height / 2));
-        
+
 
         destG.SaveAsPngAsync(outputPath + originName + "-Good.png", pngEncoder);
-        destB.SaveAsPngAsync(outputPath + originName + "-Bad.png", pngEncoder);
+        destB.SaveAsPngAsync(outputPath + originName + "-Evil.png", pngEncoder);
 
-        
-        Console.Out.WriteLine("Done " +originName + "!");
+
+        Console.Out.WriteLine("Done " + originName + "!");
 
     }
 
     static float Mix(float to, float source, float amount)
     {
-        return source * amount + to * ( 1 - amount );
+        return source * amount + to * (1 - amount);
     }
 
     static Hsv GetWhiteColor(Hsv hsvFilter)
@@ -388,51 +311,51 @@ class ImageFilterProgram
 
         bool f = false;
 
-        
+
 
         for (int k = -amount; k < amount; k++)
         {
             var search = sourceAccessor.GetRowSpan(Math.Clamp(i + k, 0, sourceHeight - 1));
-            
+
             for (int j = -amount; j < amount; j++)
             {
                 int d = k * k + j * j;
-                
-                if(d > amount * amount)
+
+                if (d > amount * amount)
                     continue;
 
                 var pixel = search[Math.Clamp(x + j, 0, sourceWidth - 1)];
 
-                if(pixel.A < 20 || (!applyOnWhite && pixel.R == 255 && pixel.G == 255 && pixel.B == 255 ))
+                if (pixel.A < 20 || (!applyOnWhite && pixel.R == 255 && pixel.G == 255 && pixel.B == 255))
                     continue;
-                
-                if(nearest > d)
+
+                if (nearest > d)
                 {
                     nearest = d;
-                    if(nearest == 0)
+                    if (nearest == 0)
                     {
                         nearest = 0.1f;
                         f = true;
                         break;
                     }
-                    
+
                 }
 
             }
 
-            if(f) break;
-            
+            if (f) break;
+
         }
-        
-        if(nearest == float.MaxValue)
+
+        if (nearest == float.MaxValue)
             nearest = 0;
 
-        return nearest/(amount * amount);
+        return nearest / (amount * amount);
     }
 
     static float ApplyShadow(PixelAccessor<Rgba32> sourceAccessor, int i, int xPos, int amountX, int amountY, int sourceHeight, int sourceWidth)
     {
-        if(sourceAccessor.GetRowSpan(i)[xPos].A > 40)
+        if (sourceAccessor.GetRowSpan(i)[xPos].A > 40)
             return 0;
 
         float res = 0;
@@ -452,7 +375,7 @@ class ImageFilterProgram
 
                 int val = k * k + j * j;
 
-                if(sourceAccessor.GetRowSpan(y)[x + 1].A < 40 || sourceAccessor.GetRowSpan(y)[x -1 ].A < 40 ) val -= 2;
+                if (sourceAccessor.GetRowSpan(y)[x + 1].A < 40 || sourceAccessor.GetRowSpan(y)[x - 1].A < 40) val -= 2;
 
                 if (val < b)
                 {
@@ -465,7 +388,7 @@ class ImageFilterProgram
                 float maxSqd = amountX * 2 * amountX * 2 + amountY * amountY;
                 float val = 1 - (b / maxSqd);
 
-                if( res < val ) res = val;
+                if (res < val) res = val;
             }
         }
 
