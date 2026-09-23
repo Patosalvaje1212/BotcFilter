@@ -246,12 +246,12 @@ public partial class ImageFilterProgram
     ///   remaining     = second (Evil/Fabled) PNG
     /// </summary>
     [JSExport]
-    public static byte[] ProcessImageFromBytes(byte[] sourceBytes, byte[] filterBytes, bool alt)
+    public static byte[] ProcessImageFromBytes(byte[] sourceBytes, byte[] filterBytes, bool alt, int shadow = 20, int outline = 5)
     {
         using var sourceImage = Image.Load<Rgba32>(sourceBytes);
         using var filter      = Image.Load<Rgba32>(filterBytes);
 
-        var (good, bad) = ProcessImage(sourceImage, filter, alt);
+        var (good, bad) = ProcessImage(sourceImage, filter, alt, shadow, outline);
 
         var result = new byte[4 + good.Length + bad.Length];
         BitConverter.TryWriteBytes(result.AsSpan(0, 4), good.Length);
@@ -267,7 +267,7 @@ public partial class ImageFilterProgram
     ///   remaining     = second (Evil/Fabled) PNG
     /// </summary>
     [JSExport]
-    public static byte[] ProcessBulkImageFromBytes(byte[] packedSources, byte[] filterBytes, bool alt)
+    public static byte[] ProcessBulkImageFromBytes(byte[] packedSources, byte[] filterBytes, bool alt, int shadow = 20, int outline = 5)
     {
         // 1. Unpack the flat input into N source images.
         byte[][] sourceBytes = UnpackByteArrays(packedSources);
@@ -281,7 +281,7 @@ public partial class ImageFilterProgram
             {
                 using var sourceImage = Image.Load<Rgba32>(sourceBytes[i]);
                 using var filter      = Image.Load<Rgba32>(filterBytes);
-                results[i] = ProcessImage(sourceImage, filter, alt);
+                results[i] = ProcessImage(sourceImage, filter, alt, shadow, outline);
             });
         }
         else
@@ -290,7 +290,7 @@ public partial class ImageFilterProgram
             for (int i = 0; i < sourceBytes.Length; i++)
             {
                 using var sourceImage = Image.Load<Rgba32>(sourceBytes[i]);
-                results[i] = ProcessImage(sourceImage, filter, alt);
+                results[i] = ProcessImage(sourceImage, filter, alt, shadow, outline);
             }
         }
 
@@ -302,7 +302,7 @@ public partial class ImageFilterProgram
     //  CORE PROCESSING (SHARED BETWEEN CLI AND WASM)
     //  Takes a loaded source image + filter image, returns two PNG blobs.
     // =====================================================================
-    private static (byte[] good, byte[] bad) ProcessImage(Image<Rgba32> sourceImage, Image<Rgba32> filter, bool alt)
+    private static (byte[] good, byte[] bad) ProcessImage(Image<Rgba32> sourceImage, Image<Rgba32> filter, bool alt, int shadow = 20, int outline = 5)
     {
         // ---------- Resize / pad ----------
         if (sourceImage.Height > filter.Height)
@@ -416,14 +416,13 @@ public partial class ImageFilterProgram
                     }
                     else
                     {
-                        int amount = 20;
 
                         float oD = ApplyShadow(
                             sourceAccessor: sourceAccessor,
                             i: i,
                             xPos: x,
                             amountX: 2,
-                            amountY: amount,
+                            amountY: shadow,
                             sourceHeight: sourceImage.Height,
                             sourceWidth: sourceImage.Width
                         );
@@ -435,9 +434,7 @@ public partial class ImageFilterProgram
                             alpha = MathF.Pow(oD, 1.25f) * 0.50f;
                         }
 
-                        amount = 5;
-
-                        float nD = ApplyOutline(sourceAccessor, i, x, amount, sourceImage.Height, sourceImage.Width, true);
+                        float nD = ApplyOutline(sourceAccessor, i, x, outline, sourceImage.Height, sourceImage.Width, true);
 
                         if (nD > 0)
                         {
