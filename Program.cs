@@ -15,6 +15,12 @@ class ImageFilterProgram
     static readonly Rgba32 outColorWhite = new(250, 250, 245);
     static readonly Hsv outColorWhiteHSL = ColorSpaceConverter.ToHsv(outColorWhite);
 
+
+    static readonly Rgba32 outColorYellow = new(222, 205, 0);
+    static readonly Hsv outColorYellowHSL = ColorSpaceConverter.ToHsv(outColorYellow);
+
+    static readonly Rgba32 outColorGreen = new(158, 196, 54);
+    static readonly Hsv outColorGreenHSL = ColorSpaceConverter.ToHsv(outColorGreen);
     private static string outputPath;
 
     static void Main(string[] args)
@@ -155,6 +161,8 @@ class ImageFilterProgram
         string path = (string)args[0];
         Image<Rgba32> filter = (Image<Rgba32>)args[1];
 
+        bool alt = Path.GetFileNameWithoutExtension(path).EndsWith("-alt");
+
         using Image<Rgba32> sourceImage = Image.Load<Rgba32>(path);
 
         double aspect = sourceImage.Height / sourceImage.Width;
@@ -230,23 +238,66 @@ class ImageFilterProgram
 
                         if (hsvPixel.V < 0.85)
                         {
-                            var pow = MathF.Pow(hsvFilter.V, 1.75f);
-                            var pow2 = MathF.Pow(hsvFilter.V, 1.25f);
+                            var filterPow = MathF.Pow(hsvFilter.V, 1.75f);
+                            var filterPow2 = MathF.Pow(hsvFilter.V, 1.25f);
+                            var filterPow3 = MathF.Pow(1 - hsvFilter.V, 2f);
+                            
 
-                            var invPow = MathF.Pow(1 - hsvFilter.V, 1.25f);
+                            var pixelPow = MathF.Pow( hsvPixel.V, 1.25f);
 
-                            goodColor = new Hsv(
-                                Mix(outColorGoodHSL.H, outColorWhiteHSL.H, invPow) * 0.2f + outColorGoodHSL.H * 0.8f,
-                                Mix(outColorGoodHSL.S, outColorWhiteHSL.S, invPow) * 0.80f + pow * 0.2f,
-                                Mix(outColorGoodHSL.V, outColorWhiteHSL.V, invPow) * hsvFilter.V
-                            );
+                            if(alt)
+                            {
+                                float darkness = 1f - hsvFilter.V;
 
-                            badColor = new Hsv(
-                                Mix(outColorBadHSL.H, outColorWhiteHSL.H, invPow) * 0.2f + outColorBadHSL.H * 0.8f,
-                                Mix(outColorBadHSL.S, outColorWhiteHSL.S, invPow) * 0.85f + pow * 0.2f,
-                                Mix(outColorBadHSL.V, outColorWhiteHSL.V, invPow) * pow2 * 0.85f
-                            );
+                                // Stronger orange as filter gets darker.
+                                // Tune exponent/multiplier to taste.
+                                float orangeAmount = MathF.Pow(darkness, 2f);
 
+                                float baseH = Mix(outColorYellowHSL.H, outColorWhiteHSL.H, pixelPow);
+                                float baseS = Mix(outColorYellowHSL.S, outColorWhiteHSL.S, pixelPow);
+                                float baseV = Mix(outColorYellowHSL.V, outColorWhiteHSL.V, pixelPow);
+
+                                // If H is 0..360:
+                                float orangeH = 00f;
+
+                                // If H is 0..1 instead, use:
+                                // float orangeH = 30f / 360f;
+
+                                // Blend hue from yellow/white mix toward orange
+                                float hue = Mix(baseH, orangeH, orangeAmount);
+
+                                // Orange usually needs more saturation than muddy yellow
+                                float orangeS = MathF.Min(1f, baseS * 1.2f + 0.1f);
+                                float sat = Mix(baseS, orangeS, orangeAmount * 0.7f);
+
+                                // Keep the darkening from the filter, optionally slightly darker for orange
+                                float val = baseV * hsvFilter.V * (1f - 0.1f * orangeAmount);
+
+                                goodColor = new Hsv(hue, sat, val);
+
+                                badColor = new Hsv(
+                                    Mix(outColorGreenHSL.H, outColorWhiteHSL.H, pixelPow) * 0.2f + outColorGreenHSL.H * 0.8f,
+                                    Mix(outColorGreenHSL.S, outColorWhiteHSL.S, pixelPow) * 0.4f + filterPow * 0.6f,
+                                    Mix(outColorGreenHSL.V, outColorWhiteHSL.V, pixelPow) * filterPow2 * 0.85f
+                                );
+
+                            }
+                            else
+                            {
+                                goodColor = new Hsv(
+                                    Mix(outColorGoodHSL.H, outColorWhiteHSL.H, pixelPow) * 0.2f + outColorGoodHSL.H * 0.8f,
+                                    Mix(outColorGoodHSL.S, outColorWhiteHSL.S, pixelPow) * 0.80f + filterPow * 0.2f,
+                                    Mix(outColorGoodHSL.V, outColorWhiteHSL.V, pixelPow) * hsvFilter.V
+                                );
+
+                                badColor = new Hsv(
+                                    Mix(outColorBadHSL.H, outColorWhiteHSL.H, pixelPow) * 0.2f + outColorBadHSL.H * 0.8f,
+                                    Mix(outColorBadHSL.S, outColorWhiteHSL.S, pixelPow) * 0.85f + filterPow * 0.2f,
+                                    Mix(outColorBadHSL.V, outColorWhiteHSL.V, pixelPow) * filterPow2 * 0.85f
+                                );
+
+                            }
+                            
                         }
                         else
                         {
@@ -320,8 +371,8 @@ class ImageFilterProgram
         destG.Mutate(res => res.Resize(sourceImage.Width / 2, sourceImage.Height / 2));
 
 
-        destG.SaveAsPngAsync(outputPath + originName + "-Good.png", pngEncoder);
-        destB.SaveAsPngAsync(outputPath + originName + "-Evil.png", pngEncoder);
+        destG.SaveAsPngAsync(outputPath + originName +(alt ? "-Loric.png" : "-Good.png" ), pngEncoder);
+        destB.SaveAsPngAsync(outputPath + originName +(alt ? "-Fabled.png" : "-Evil.png" ), pngEncoder);
 
 
         Console.Out.WriteLine("Done " + originName + "!");
