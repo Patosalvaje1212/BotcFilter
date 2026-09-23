@@ -266,28 +266,36 @@ public partial class ImageFilterProgram
     ///   bytes [4..]   = first PNG
     ///   remaining     = second (Evil/Fabled) PNG
     /// </summary>
-    public static byte[][] ProcessImageFromBytes(byte[][] sourceBytes, byte[] filterBytes, bool alt)
+    [JSExport]
+    public static byte[] ProcessBulkImageFromBytes(byte[] packedSources, byte[] filterBytes, bool alt)
     {
-        List<byte[]> list = [];
+        // 1. Unpack the flat input into N source images.
+        byte[][] sourceBytes = UnpackByteArrays(packedSources);
+
+        // 2. Process (parallel or sequential).
+        var results = new (byte[] good, byte[] bad)[sourceBytes.Length];
+
         if (CanParallelize)
         {
-            Parallel.ForEach(sourceBytes, bytes =>
+            Parallel.For(0, sourceBytes.Length, i =>
             {
-                var d = ProcessImageFromBytes(bytes, filterBytes, alt);
-                lock(list)
-                {
-                    list.Add(d);
-                }
+                using var sourceImage = Image.Load<Rgba32>(sourceBytes[i]);
+                using var filter      = Image.Load<Rgba32>(filterBytes);
+                results[i] = ProcessImage(sourceImage, filter, alt);
             });
         }
         else
         {
-            // Sequential fallback (single-threaded WASM or user disabled)
-            foreach (var bytes in sourceBytes)
-                list.Add(ProcessImageFromBytes(bytes, filterBytes, alt));
+            using var filter = Image.Load<Rgba32>(filterBytes);
+            for (int i = 0; i < sourceBytes.Length; i++)
+            {
+                using var sourceImage = Image.Load<Rgba32>(sourceBytes[i]);
+                results[i] = ProcessImage(sourceImage, filter, alt);
+            }
         }
 
-        return [.. list];
+        // 3. Pack all results into one flat byte[].
+        return PackResults(results.ToList());
     }
 
     // =====================================================================
@@ -473,13 +481,66 @@ public partial class ImageFilterProgram
     }
 
     // =====================================================================
-    //  Helpers (unchanged)
+    //  Helpers 
     // =====================================================================
 
     [JSExport]
     public static void SetMultithreading(bool enabled)
     {
         UseMultithreading = enabled;
+    }
+
+    /// <summary>
+    /// Unpacks a flat byte[] produced by JS into N separate byte arrays.
+    /// Format: [N][len1][len2]...[lenN][data1][data2]...[dataN]
+    /// </summary>
+    private static byte[][] UnpackByteArrays(byte[] packed)
+    {
+        int n = BitConverter.ToInt32(packed, 0);
+
+        var lengths = new int[n];
+        int headerSize = 4 + 4 * n;
+        for (int i = 0; i < n; i++)
+            lengths[i] = BitConverter.ToInt32(packed, 4 + 4 * i);
+
+        var result = new byte[n][];
+        int offset = headerSize;
+        for (int i = 0; i < n; i++)
+        {
+            result[i] = new byte[lengths[i]];
+            Buffer.BlockCopy(packed, offset, result[i], 0, lengths[i]);
+            offset += lengths[i];
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// Packs N (good, bad) PNG pairs into a single self-describing byte[].
+    /// Format: [N][lenGood1][lenBad1][good1][bad1][lenGood2][lenBad2][good2][bad2]...
+    /// </summary>
+    private static byte[] PackResults(List<(byte[] good, byte[] bad)> results)
+    {
+        int total = 4; // N
+        foreach (var (g, b) in results)
+            total += 8 + g.Length + b.Length; // 2 lengths + payloads
+
+        var packed = new byte[total];
+        int offset = 0;
+
+        BitConverter.TryWriteBytes(packed.AsSpan(offset, 4), results.Count);
+        offset += 4;
+
+        foreach (var (good, bad) in results)
+        {
+            BitConverter.TryWriteBytes(packed.AsSpan(offset, 4), good.Length);
+            offset += 4;
+            BitConverter.TryWriteBytes(packed.AsSpan(offset, 4), bad.Length);
+            offset += 4;
+
+            good.CopyTo(packed, offset); offset += good.Length;
+            bad.CopyTo(packed, offset);  offset += bad.Length;
+        }
+        return packed;
     }
 
     static float Mix(float to, float source, float amount)
