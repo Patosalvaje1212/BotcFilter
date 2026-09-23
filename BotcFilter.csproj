@@ -13,6 +13,11 @@
 
   <PropertyGroup>
     <UseImageSharp>true</UseImageSharp>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' == 'browser-wasm'">
+    <WasmEnableThreads>true</WasmEnableThreads>
   </PropertyGroup>
 
 </Project>

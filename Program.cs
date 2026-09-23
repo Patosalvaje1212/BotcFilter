@@ -1,13 +1,18 @@
 ﻿using System.Diagnostics;
 using System.Numerics;
+using System.Reflection;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices.JavaScript;
+using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.ColorSpaces;
 using SixLabors.ImageSharp.ColorSpaces.Conversion;
 using SixLabors.ImageSharp.Formats.Png;
+using SixLabors.ImageSharp.PixelFormats;
+using SixLabors.ImageSharp.Processing;
 using SixLabors.ImageSharp.Processing.Processors.Quantization;
 
-class ImageFilterProgram
+public partial class ImageFilterProgram
 {
-
     static readonly Rgba32 outColorGood = new(24, 148, 243);
     static readonly Hsv outColorGoodHSL = ColorSpaceConverter.ToHsv(outColorGood);
     static readonly Rgba32 outColorBad = new(195, 19, 25);
@@ -15,16 +20,76 @@ class ImageFilterProgram
     static readonly Rgba32 outColorWhite = new(250, 250, 245);
     static readonly Hsv outColorWhiteHSL = ColorSpaceConverter.ToHsv(outColorWhite);
 
-
     static readonly Rgba32 outColorYellow = new(222, 205, 0);
     static readonly Hsv outColorYellowHSL = ColorSpaceConverter.ToHsv(outColorYellow);
 
     static readonly Rgba32 outColorGreen = new(158, 196, 54);
     static readonly Hsv outColorGreenHSL = ColorSpaceConverter.ToHsv(outColorGreen);
+
     private static string outputPath;
 
+    public static bool UseMultithreading { get; set; } = true;
+    private static bool? _threadingAvailable;
+
+    /// <summary>
+    /// True when the current runtime can actually run managed threads in parallel.
+    /// Desktop: always true.
+    /// Browser (WASM): true only if WasmEnableThreads was set AND the page
+    /// is cross-origin isolated with SharedArrayBuffer available.
+    /// </summary>
+    public static bool IsMultithreadingSupported
+    {
+        get
+        {
+            if (_threadingAvailable.HasValue)
+                return _threadingAvailable.Value;
+
+            _threadingAvailable = DetectThreadingSupport();
+            return _threadingAvailable.Value;
+        }
+    }
+
+    private static bool DetectThreadingSupport()
+    {
+        // 1. Desktop / non-WASM: threading is always available.
+        if (!OperatingSystem.IsBrowser() && !OperatingSystem.IsWasi())
+            return true;
+
+        // 2. Try the official API (available in .NET 11+).
+        try
+        {
+            var prop = typeof(RuntimeFeature).GetProperty(
+                "IsMultithreadingSupported",
+                BindingFlags.Public | BindingFlags.Static);
+
+            if (prop != null)
+                return (bool)prop.GetValue(null)!;
+        }
+        catch
+        {
+            // Reflection failed; fall through to JS check.
+
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether the app should actually run image processing in parallel.
+    /// Combines the user toggle with the runtime capability check.
+    /// </summary>
+    public static bool CanParallelize =>
+        UseMultithreading && IsMultithreadingSupported;
+
+    // =====================================================================
+    //  CLI ENTRY POINT
+    // =====================================================================
     static void Main(string[] args)
     {
+        // When hosted in the browser, never run the CLI loop.
+        if (OperatingSystem.IsBrowser())
+            return;
+
         string inputPath;
         int toProcess = int.MaxValue;
 
@@ -72,20 +137,16 @@ class ImageFilterProgram
                 Console.ResetColor();
 
                 if (int.TryParse(Console.ReadLine()?.Trim(), out int res))
-                {
                     nToProcess = res - 1;
-                }
 
                 if (nToProcess >= 0)
                     toProcess = nToProcess;
             }
-
         }
         else
         {
             inputPath = args[0];
             outputPath = args[1];
-
 
             if (args.Length >= 3)
             {
@@ -96,6 +157,9 @@ class ImageFilterProgram
                     toProcess = nToProcess;
             }
         }
+
+        if (args.Contains("--no-threads"))
+            UseMultithreading = false;
 
 
         if (!Directory.Exists(inputPath))
@@ -121,31 +185,28 @@ class ImageFilterProgram
 
         using Image<Rgba32> filter = Image.Load<Rgba32>(inputPath + "filter.png");
 
-        HashSet<Thread> threads = [];
-
-
         int i = 0;
         IEnumerable<string> files = Directory.EnumerateFiles(inputPath, "*.png");
 
-        foreach (var file in files.OrderByDescending(File.GetLastWriteTime))
+        var filesToProcess = files
+            .OrderByDescending(File.GetLastWriteTime)
+            .Where(f => Path.GetFileNameWithoutExtension(f) != "filter")
+            .Take(toProcess == int.MaxValue ? int.MaxValue : toProcess + 1)
+            .ToList();
+
+        if (CanParallelize)
         {
-            if (Path.GetFileNameWithoutExtension(file) == "filter")
-                continue;
-
-            Thread newThread = new Thread(ProcessFile);
-            newThread.Start(new object[] { file, filter });
-
-            threads.Add(newThread);
-
-            i++;
-
-            if (i > toProcess)
-                break;
+            // Desktop: true OS threads. WASM: runtime-managed worker threads.
+            Parallel.ForEach(filesToProcess, file =>
+            {
+                ProcessFile(file, filter);
+            });
         }
-
-        foreach (var thread in threads)
+        else
         {
-            thread.Join();
+            // Sequential fallback (single-threaded WASM or user disabled)
+            foreach (var file in filesToProcess)
+                ProcessFile(file, filter);
         }
 
         stopwatch.Stop();
@@ -154,69 +215,128 @@ class ImageFilterProgram
         Console.Write($"{i} images rendered in {stopwatch.Elapsed.Minutes}:{stopwatch.Elapsed.Seconds}:{stopwatch.Elapsed.Milliseconds} elapsed");
     }
 
-    private static void ProcessFile(object? obj)
+    // =====================================================================
+    //  FILE-BASED PROCESSING (CLI PATH ONLY)
+    // =====================================================================
+    private static void ProcessFile(string path, Image<Rgba32> filter)
     {
-        object[] args = (object[])obj;
-
-        string path = (string)args[0];
-        Image<Rgba32> filter = (Image<Rgba32>)args[1];
-
         bool alt = Path.GetFileNameWithoutExtension(path).EndsWith("-alt");
 
         using Image<Rgba32> sourceImage = Image.Load<Rgba32>(path);
 
-        double aspect = sourceImage.Height / sourceImage.Width;
+        string originName = Path.GetFileNameWithoutExtension(path);
+        Console.Out.WriteLine("Processing " + outputPath + originName + "...");
 
-        if( sourceImage.Height > filter.Height )
+        var (goodBytes, badBytes) = ProcessImage(sourceImage, filter, alt);
+
+        File.WriteAllBytes(outputPath + originName + (alt ? "-Loric.png"  : "-Good.png"), goodBytes);
+        File.WriteAllBytes(outputPath + originName + (alt ? "-Fabled.png" : "-Evil.png"), badBytes);
+
+        Console.Out.WriteLine("Done " + originName + "!");
+    }
+
+
+    // =====================================================================
+    //  JS EXPORT
+    // =====================================================================
+    /// <summary>
+    /// Called from JavaScript. Returns a single packed byte[]:
+    ///   bytes [0..3]  = int32 little-endian length of the first (Good/Loric) PNG
+    ///   bytes [4..]   = first PNG
+    ///   remaining     = second (Evil/Fabled) PNG
+    /// </summary>
+    [JSExport]
+    public static byte[] ProcessImageFromBytes(byte[] sourceBytes, byte[] filterBytes, bool alt)
+    {
+        using var sourceImage = Image.Load<Rgba32>(sourceBytes);
+        using var filter      = Image.Load<Rgba32>(filterBytes);
+
+        var (good, bad) = ProcessImage(sourceImage, filter, alt);
+
+        var result = new byte[4 + good.Length + bad.Length];
+        BitConverter.TryWriteBytes(result.AsSpan(0, 4), good.Length);
+        good.CopyTo(result, 4);
+        bad.CopyTo(result, 4 + good.Length);
+        return result;
+    }
+
+    /// <summary>
+    /// Called from JavaScript. Returns an array of byte[]:
+    ///   bytes [0..3]  = int32 little-endian length of the first (Good/Loric) PNG
+    ///   bytes [4..]   = first PNG
+    ///   remaining     = second (Evil/Fabled) PNG
+    /// </summary>
+    public static byte[][] ProcessImageFromBytes(byte[][] sourceBytes, byte[] filterBytes, bool alt)
+    {
+        List<byte[]> list = [];
+        if (CanParallelize)
         {
-            sourceImage.Mutate(x => {
-                
+            Parallel.ForEach(sourceBytes, bytes =>
+            {
+                var d = ProcessImageFromBytes(bytes, filterBytes, alt);
+                lock(list)
+                {
+                    list.Add(d);
+                }
+            });
+        }
+        else
+        {
+            // Sequential fallback (single-threaded WASM or user disabled)
+            foreach (var bytes in sourceBytes)
+                list.Add(ProcessImageFromBytes(bytes, filterBytes, alt));
+        }
+
+        return [.. list];
+    }
+
+    // =====================================================================
+    //  CORE PROCESSING (SHARED BETWEEN CLI AND WASM)
+    //  Takes a loaded source image + filter image, returns two PNG blobs.
+    // =====================================================================
+    private static (byte[] good, byte[] bad) ProcessImage(Image<Rgba32> sourceImage, Image<Rgba32> filter, bool alt)
+    {
+        // ---------- Resize / pad ----------
+        if (sourceImage.Height > filter.Height)
+        {
+            sourceImage.Mutate(x =>
+            {
                 x.Resize(new ResizeOptions()
                 {
                     Mode = ResizeMode.Max,
                     Size = new Size(filter.Width, filter.Height),
                     Position = AnchorPositionMode.Center,
                     Sampler = KnownResamplers.RobidouxSharp,
-                    //TargetRectangle = new Rectangle(new Point(filter.Width / 2, filter.Height / 2), new Size(filter.Width, filter.Height)),
                     CenterCoordinates = new PointF(0.5f, 0.5f)
-
-                } );
+                });
                 x.Pad(filter.Width, filter.Height, Color.Transparent);
             });
         }
-        else
-        if( sourceImage.Width > filter.Width )
+        else if (sourceImage.Width > filter.Width)
         {
-            sourceImage.Mutate(x => {
-
+            sourceImage.Mutate(x =>
+            {
                 x.Resize(new ResizeOptions()
                 {
                     Size = new Size(filter.Width, filter.Height),
                     Mode = ResizeMode.Max,
                     Position = AnchorPositionMode.Center,
                     Sampler = KnownResamplers.Lanczos3
-                } );
+                });
                 x.Pad(filter.Width, filter.Height, Color.Transparent);
             });
-
         }
 
         using Image<Rgba32> destG = new Image<Rgba32>(Configuration.Default, sourceImage.Width, sourceImage.Height);
         using Image<Rgba32> destB = new Image<Rgba32>(Configuration.Default, sourceImage.Width, sourceImage.Height);
 
-
         int height = sourceImage.Height;
 
-        string originName = Path.GetFileNameWithoutExtension(path);
-
-        Console.Out.WriteLine("Processing " + outputPath + originName + "...");
-
-
+        // ---------- Per-pixel filter ----------
         sourceImage.ProcessPixelRows(destG, destB, (sourceAccessor, targetGoodAccessor, targetBadAccessor) =>
         {
             for (int i = 0; i < height; i++)
             {
-
                 Span<Rgba32> sourceRow = sourceAccessor.GetRowSpan(i);
                 Span<Rgba32> targetGoodRow = targetGoodAccessor.GetRowSpan(i);
                 Span<Rgba32> targetBadRow = targetBadAccessor.GetRowSpan(i);
@@ -226,10 +346,9 @@ class ImageFilterProgram
                     Hsv hsvFilter = ColorSpaceConverter.ToHsv(filter[x, i]);
 
                     Hsv goodColor = ColorSpaceConverter.ToHsv(Color.Transparent.ToPixel<Rgba32>());
-                    Hsv badColor = ColorSpaceConverter.ToHsv(Color.Transparent.ToPixel<Rgba32>());
+                    Hsv badColor  = ColorSpaceConverter.ToHsv(Color.Transparent.ToPixel<Rgba32>());
 
                     Rgba32 pixel = sourceRow[x];
-
                     float alpha = pixel.A / 255f;
 
                     if (alpha > 0.8)
@@ -238,39 +357,24 @@ class ImageFilterProgram
 
                         if (hsvPixel.V < 0.85)
                         {
-                            var filterPow = MathF.Pow(hsvFilter.V, 1.75f);
+                            var filterPow  = MathF.Pow(hsvFilter.V, 1.75f);
                             var filterPow2 = MathF.Pow(hsvFilter.V, 1.25f);
-                            var filterPow3 = MathF.Pow(1 - hsvFilter.V, 2f);
-                            
+                            var pixelPow   = MathF.Pow(hsvPixel.V, 1.25f);
 
-                            var pixelPow = MathF.Pow( hsvPixel.V, 1.25f);
-
-                            if(alt)
+                            if (alt)
                             {
                                 float darkness = 1f - hsvFilter.V;
-
-                                // Stronger orange as filter gets darker.
-                                // Tune exponent/multiplier to taste.
                                 float orangeAmount = MathF.Pow(darkness, 2f);
 
                                 float baseH = Mix(outColorYellowHSL.H, outColorWhiteHSL.H, pixelPow);
                                 float baseS = Mix(outColorYellowHSL.S, outColorWhiteHSL.S, pixelPow);
                                 float baseV = Mix(outColorYellowHSL.V, outColorWhiteHSL.V, pixelPow);
 
-                                // If H is 0..360:
-                                float orangeH = 00f;
-
-                                // If H is 0..1 instead, use:
-                                // float orangeH = 30f / 360f;
-
-                                // Blend hue from yellow/white mix toward orange
+                                float orangeH = 0f;
                                 float hue = Mix(baseH, orangeH, orangeAmount);
 
-                                // Orange usually needs more saturation than muddy yellow
                                 float orangeS = MathF.Min(1f, baseS * 1.2f + 0.1f);
                                 float sat = Mix(baseS, orangeS, orangeAmount * 0.7f);
-
-                                // Keep the darkening from the filter, optionally slightly darker for orange
                                 float val = baseV * hsvFilter.V * (1f - 0.1f * orangeAmount);
 
                                 goodColor = new Hsv(hue, sat, val);
@@ -280,7 +384,6 @@ class ImageFilterProgram
                                     Mix(outColorGreenHSL.S, outColorWhiteHSL.S, pixelPow) * 0.4f + filterPow * 0.6f,
                                     Mix(outColorGreenHSL.V, outColorWhiteHSL.V, pixelPow) * filterPow2 * 0.85f
                                 );
-
                             }
                             else
                             {
@@ -295,21 +398,16 @@ class ImageFilterProgram
                                     Mix(outColorBadHSL.S, outColorWhiteHSL.S, pixelPow) * 0.85f + filterPow * 0.2f,
                                     Mix(outColorBadHSL.V, outColorWhiteHSL.V, pixelPow) * filterPow2 * 0.85f
                                 );
-
                             }
-                            
                         }
                         else
                         {
-
                             goodColor = GetWhiteColor(hsvFilter);
-                            badColor = GetWhiteColor(hsvFilter);
+                            badColor  = GetWhiteColor(hsvFilter);
                         }
-
                     }
                     else
                     {
-
                         int amount = 20;
 
                         float oD = ApplyShadow(
@@ -325,10 +423,9 @@ class ImageFilterProgram
                         if (oD > 0)
                         {
                             goodColor = ColorSpaceConverter.ToHsv(Color.Black.ToPixel<Rgba32>());
-                            badColor = ColorSpaceConverter.ToHsv(Color.Black.ToPixel<Rgba32>());
+                            badColor  = ColorSpaceConverter.ToHsv(Color.Black.ToPixel<Rgba32>());
                             alpha = MathF.Pow(oD, 1.25f) * 0.50f;
                         }
-
 
                         amount = 5;
 
@@ -337,23 +434,21 @@ class ImageFilterProgram
                         if (nD > 0)
                         {
                             goodColor = GetWhiteColor(hsvFilter);
-                            badColor = GetWhiteColor(hsvFilter);
-
+                            badColor  = GetWhiteColor(hsvFilter);
                             alpha = MathF.Min(MathF.Pow(1 - nD, 0.2f) + 0.25f, 1f);
                         }
                     }
 
-
                     Rgba32 gCol = new Rgba32(new Vector4(ColorSpaceConverter.ToRgb(goodColor).ToVector3(), alpha));
                     Rgba32 bCol = new Rgba32(new Vector4(ColorSpaceConverter.ToRgb(badColor).ToVector3(), alpha));
 
-
                     targetGoodRow[x] = gCol;
-                    targetBadRow[x] = bCol;
+                    targetBadRow[x]  = bCol;
                 }
             }
         });
 
+        // ---------- Encode ----------
         var pngEncoder = new PngEncoder()
         {
             TransparentColorMode = PngTransparentColorMode.Clear,
@@ -364,25 +459,31 @@ class ImageFilterProgram
             PixelSamplingStrategy = new ExtensivePixelSamplingStrategy(),
             BitDepth = PngBitDepth.Bit4,
             SkipMetadata = true,
-
         };
 
         destB.Mutate(res => res.Resize(sourceImage.Width / 2, sourceImage.Height / 2));
         destG.Mutate(res => res.Resize(sourceImage.Width / 2, sourceImage.Height / 2));
 
+        using var msG = new MemoryStream();
+        using var msB = new MemoryStream();
+        destG.SaveAsPng(msG, pngEncoder);
+        destB.SaveAsPng(msB, pngEncoder);
 
-        destG.SaveAsPngAsync(outputPath + originName +(alt ? "-Loric.png" : "-Good.png" ), pngEncoder);
-        destB.SaveAsPngAsync(outputPath + originName +(alt ? "-Fabled.png" : "-Evil.png" ), pngEncoder);
+        return (msG.ToArray(), msB.ToArray());
+    }
 
+    // =====================================================================
+    //  Helpers (unchanged)
+    // =====================================================================
 
-        Console.Out.WriteLine("Done " + originName + "!");
-
+    [JSExport]
+    public static void SetMultithreading(bool enabled)
+    {
+        UseMultithreading = enabled;
     }
 
     static float Mix(float to, float source, float amount)
-    {
-        return source * amount + to * (1 - amount);
-    }
+        => source * amount + to * (1 - amount);
 
     static Hsv GetWhiteColor(Hsv hsvFilter)
     {
@@ -396,10 +497,7 @@ class ImageFilterProgram
     static float ApplyOutline(PixelAccessor<Rgba32> sourceAccessor, int i, int x, int amount, int sourceHeight, int sourceWidth, bool applyOnWhite = false)
     {
         float nearest = float.MaxValue;
-
         bool f = false;
-
-
 
         for (int k = -amount; k < amount; k++)
         {
@@ -408,9 +506,7 @@ class ImageFilterProgram
             for (int j = -amount; j < amount; j++)
             {
                 int d = k * k + j * j;
-
-                if (d > amount * amount)
-                    continue;
+                if (d > amount * amount) continue;
 
                 var pixel = search[Math.Clamp(x + j, 0, sourceWidth - 1)];
 
@@ -426,18 +522,13 @@ class ImageFilterProgram
                         f = true;
                         break;
                     }
-
                 }
-
             }
 
             if (f) break;
-
         }
 
-        if (nearest == float.MaxValue)
-            nearest = 0;
-
+        if (nearest == float.MaxValue) nearest = 0;
         return nearest / (amount * amount);
     }
 
@@ -450,32 +541,23 @@ class ImageFilterProgram
         for (int k = 0; k < amountY; k++)
         {
             int y = i - k;
-
             if (y < 0) break;
 
             int b = int.MaxValue;
             for (int j = -amountX - k; j < amountX + k / 2; j++)
             {
                 int x = xPos + j;
-
                 if (x < 0 || x >= sourceWidth) break;
                 if (sourceAccessor.GetRowSpan(y)[x].A < 40) break;
 
                 int val = k * k + j * j;
-
-               // if (sourceAccessor.GetRowSpan(y)[x + 1].A < 40 || sourceAccessor.GetRowSpan(y)[x - 1].A < 40) val -= 2;
-
-                if (val < b)
-                {
-                    b = val;
-                }
+                if (val < b) b = val;
             }
 
             if (b != int.MaxValue)
             {
                 float maxSqd = amountX * 2 * amountX * 2 + amountY * amountY;
                 float val = 1 - (b / maxSqd);
-
                 if (res < val) res = val;
             }
         }
